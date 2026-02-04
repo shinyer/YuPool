@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-proxy_pool.py
+yupool.py
 - fetch:  从多个来源抓取代理并分类保存
 - check:  并发验证代理可用性并输出 alive/dead/stats
 - all:    fetch + check
@@ -27,6 +27,18 @@ import aiohttp
 try:
     from aiohttp_socks import ProxyConnector  # type: ignore
     SOCKS_SUPPORTED = True
+
+
+BANNER = r"""
+__   __      ____              _
+\ \ / /_   _|  _ \ ___   ___  | |
+ \ V /| | | | |_) / _ \ / _ \ | |
+  | | | |_| |  __/ (_) | (_) ||_|
+  |_|  \__,_|_|   \___/ \___/ (_)
+
+YuPool • Proxy Fetcher & Checker
+"""
+
 except Exception:
     ProxyConnector = None
     SOCKS_SUPPORTED = False
@@ -159,6 +171,27 @@ def read_lines(path: str) -> List[str]:
         return []
     with open(path, "r", encoding="utf-8") as f:
         return [x.strip() for x in f if x.strip()]
+
+def _render_progress(done: int, total: int, start_ts: float, width: int = 28) -> str:
+    """Return a single-line ASCII progress bar with ETA."""
+    if total <= 0:
+        return "[?]"
+    frac = max(0.0, min(1.0, done / total))
+    filled = int(frac * width)
+    bar = "█" * filled + "░" * (width - filled)
+    elapsed = max(0.001, time.time() - start_ts)
+    rate = done / elapsed
+    remaining = total - done
+    eta = remaining / rate if rate > 0 else 0
+    def fmt_sec(x: float) -> str:
+        x = int(x)
+        m, s = divmod(x, 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h:d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+    return f"[{bar}] {done}/{total}  {frac*100:5.1f}%  {rate:6.1f}/s  ETA {fmt_sec(eta)}"
+
 
 
 # ===================== FETCH（抓取） =====================
@@ -422,8 +455,10 @@ async def cmd_check(args: argparse.Namespace) -> int:
         for coro in asyncio.as_completed(tasks):
             proxy, ok, cost, msg = await coro
             done += 1
-            if args.quiet is False and done % max(1, total // 20) == 0:
-                print(f"[*] progress: {done}/{total}")
+            if not args.quiet:
+                # Single-line progress bar (no extra deps)
+                sys.stdout.write("\r" + _render_progress(done, total, t_start))
+                sys.stdout.flush()
 
             if ok:
                 scheme = urlparse(proxy).scheme.lower()
@@ -435,6 +470,10 @@ async def cmd_check(args: argparse.Namespace) -> int:
                     alive_s4.append((proxy, cost))
             else:
                 dead.append((proxy, msg))
+
+        if not args.quiet:
+            sys.stdout.write(\"\n\")
+            sys.stdout.flush()
 
     alive_http.sort(key=lambda x: x[1])
     alive_s5.sort(key=lambda x: x[1])
@@ -490,9 +529,11 @@ async def cmd_all(args: argparse.Namespace) -> int:
 # ===================== CLI =====================
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="proxy_pool",
+        prog="yupool",
         description="Single-file Proxy Fetcher & Checker (Linux-friendly, GitHub-ready)"
     )
+    p.add_argument("--no-banner", action="store_true", help="不显示启动横幅（适合脚本/CI）")
+
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def add_common(sp):
@@ -529,6 +570,9 @@ async def main_async() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+
+    if not args.no_banner:
+        print(BANNER)
     if args.cmd == "fetch":
         return await cmd_fetch(args)
     if args.cmd == "check":
